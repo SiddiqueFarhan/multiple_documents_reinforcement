@@ -119,7 +119,7 @@ else:
 
     # Question input and response
     question = st.text_input("Ask queries related to the uploaded knowledge:")
-    if question and st.button("Submit query"):
+    if st.button("Submit query"):
         with st.spinner("Getting your answer..."):
             retrieved_docs = docsearch.as_retriever(search_kwargs={"k": 10}).get_relevant_documents(question)
             context = "\n\n".join([doc.page_content for doc in retrieved_docs])
