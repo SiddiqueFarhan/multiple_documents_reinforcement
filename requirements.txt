@@ -10,3 +10,4 @@ python-dotenv
 python-docx
 openpyxl
 pinecone-client[grpc]
+pymongo
