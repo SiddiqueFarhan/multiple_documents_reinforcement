@@ -10,11 +10,62 @@ from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document  # Import Document class
+from pymongo.mongo_client import MongoClient
+from pymongo.server_api import ServerApi
 
 # Set API keys
 openai_api_key = os.getenv("OPENAI_API_KEY")
 api_key = os.getenv("PINECONE_API_KEY")
 os.environ['PINECONE_API_KEY'] = api_key
+
+
+uri = "mongodb+srv://nic:mydatabase@cluster0.0plxa.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+
+
+# Create a new client and connect to the server
+client = MongoClient(uri, server_api=ServerApi('1'))
+
+# Access your database (replace 'applicationinfo' with your actual database name)
+db = client['applicationinfo']
+
+# Access collections for 'questions' and 'uploadedpdf'
+questions_collection = db['questions']
+uploadedpdf_collection = db['uploadedpdf']
+
+# Functions for 'questions' collection
+def insert_question(question):
+    """Inserts a question into the 'questions' collection."""
+    data = {"name": question}
+    result = questions_collection.insert_one(data)
+
+
+def delete_all_questions():
+    """Deletes all documents from the 'questions' collection."""
+    query = {}  # Empty query to match all documents
+    result = questions_collection.delete_many(query)
+
+
+# Functions for 'uploadedpdf' collection
+def insert_pdf_data(pdf_data):
+    """Inserts PDF data into the 'uploadedpdf' collection."""
+    data = {"pdf_content": pdf_data}
+    result = uploadedpdf_collection.insert_one(data)
+
+
+def delete_all_pdf_data():
+    """Deletes all documents from the 'uploadedpdf' collection."""
+    query = {}  # Empty query to match all documents
+    result = uploadedpdf_collection.delete_many(query)
+
+
+
+
+
+
+
+
+
+
 
 # Define constants
 namespace = "wondervector5000"
@@ -105,6 +156,8 @@ else:
                 with open("uploaded_pdf.pdf", "wb") as f:
                     f.write(uploaded_file.getbuffer())
                 loader = PyPDFLoader("uploaded_pdf.pdf")
+                # insert_pdf_data(loader) 
+
                 pages = loader.load_and_split()
                 text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=200)
                 documents = text_splitter.split_documents(pages)
@@ -114,6 +167,13 @@ else:
                     embedding=embeddings,
                     namespace=namespace,
                 )
+
+            # Concatenate all chunks of text into one string to store in MongoDB
+            pdf_text = "\n".join([doc.page_content for doc in documents])
+
+            # Save extracted PDF text into MongoDB
+            insert_pdf_data(pdf_text)
+
             st.success("Document uploaded and processed. You can now ask questions about its content.")
 
 
@@ -124,6 +184,7 @@ else:
             retrieved_docs = docsearch.as_retriever(search_kwargs={"k": 10}).get_relevant_documents(question)
             context = "\n\n".join([doc.page_content for doc in retrieved_docs])
             answer = qa.invoke(question)
+            insert_question(question) 
             st.session_state.answer = answer["result"]
             st.session_state.question = question
             st.session_state.feedback_given = False
@@ -183,6 +244,8 @@ else:
                 pc = Pinecone(api_key=api_key)
                 index = pc.Index(index_name)
                 index.delete(delete_all=True, namespace=namespace)
+                delete_all_questions()                      # Delete all questions from 'questions'
+                delete_all_pdf_data()                       # Delete all PDF data from 'uploadedpdf'
                 st.success("Database cleared!")
             except:
                 st.error("The database is already empty.")
