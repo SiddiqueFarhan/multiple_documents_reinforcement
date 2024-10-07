@@ -29,20 +29,14 @@ client = MongoClient(uri, server_api=ServerApi('1'))
 db = client['applicationinfo']
 
 # Access collections for 'questions' and 'uploadedpdf'
-questions_collection = db['questions']
-uploadedpdf_collection = db['uploadedpdf']
+questions_collection = db['questions_old']
+uploadedpdf_collection = db['uploadedpdf_old']
 
 # Functions for 'questions' collection
-def insert_question(question):
+def insert_question(question, answer, feedback):
     """Inserts a question into the 'questions' collection."""
-    data = {"name": question}
+    data = {"question": question, "asnwer": answer, "feedback": feedback}
     result = questions_collection.insert_one(data)
-
-
-def delete_all_questions():
-    """Deletes all documents from the 'questions' collection."""
-    query = {}  # Empty query to match all documents
-    result = questions_collection.delete_many(query)
 
 
 # Functions for 'uploadedpdf' collection
@@ -52,28 +46,14 @@ def insert_pdf_data(pdf_data):
     result = uploadedpdf_collection.insert_one(data)
 
 
-def delete_all_pdf_data():
-    """Deletes all documents from the 'uploadedpdf' collection."""
-    query = {}  # Empty query to match all documents
-    result = uploadedpdf_collection.delete_many(query)
-
-
-
-
-
-
-
-
 
 
 
 # Define constants
 namespace = "wondervector5000"
 model_name = 'text-embedding-3-small'
-
-index_name = "memorymultidocs"
+index_name = "modelmemory"
 chunk_size = 1000
-
 USERNAME = "User"
 PASSWORD = "Password123"
 
@@ -109,6 +89,20 @@ def add_bg_from_url():
         unsafe_allow_html=True
     )
 
+# Function to check if the Pinecone index is empty
+def is_index_empty():
+    try:
+        # Initialize Pinecone client
+        pc = Pinecone(api_key=api_key)
+        index = pc.Index(index_name)
+        
+        # Query Pinecone to check the number of vectors in the index
+        stats = index.describe_index_stats(namespace=namespace)
+        vector_count = stats['namespaces'].get(namespace, {}).get('vector_count', 0)
+        return vector_count == 0  # Return True if no vectors are stored
+    except Exception as e:
+        st.error(f"Error checking index status: {e}")
+        return True
 
 # Streamlit app settings
 st.set_page_config(page_title="ASKSIDEWAYS", page_icon=":bar_chart:")
@@ -147,34 +141,33 @@ if not st.session_state.logged_in:
 else:
     st.title("Envoy")
 
+    # Check if Pinecone database is empty
+    if is_index_empty():
+        # Show file upload section only if the database is empty
+        st.write("Upload documents")
+        uploaded_file = st.file_uploader("Choose a file", type=["pdf"])
+        if uploaded_file:
+            if st.button("Submit the file"):
+                with st.spinner("Uploading and processing document..."):
+                    with open("uploaded_pdf.pdf", "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    loader = PyPDFLoader("uploaded_pdf.pdf")
+                    pages = loader.load_and_split()
+                    text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=200)
+                    documents = text_splitter.split_documents(pages)
+                    docsearch = PineconeVectorStore.from_documents(
+                        documents=documents,
+                        index_name=index_name,
+                        embedding=embeddings,
+                        namespace=namespace,
+                    )
+                # Concatenate all chunks of text into one string to store in MongoDB
+                pdf_text = "\n".join([doc.page_content for doc in documents])
 
-    # Show file upload section only if the database is empty
-    uploaded_file = st.file_uploader("Choose a file", type=["pdf"])
-    if uploaded_file:
-        if st.button("Submit the file"):
-            with st.spinner("Uploading and processing document..."):
-                with open("uploaded_pdf.pdf", "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                loader = PyPDFLoader("uploaded_pdf.pdf")
-                # insert_pdf_data(loader) 
+                # Save extracted PDF text into MongoDB
+                insert_pdf_data(pdf_text)
 
-                pages = loader.load_and_split()
-                text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=200)
-                documents = text_splitter.split_documents(pages)
-                docsearch = PineconeVectorStore.from_documents(
-                    documents=documents,
-                    index_name=index_name,
-                    embedding=embeddings,
-                    namespace=namespace,
-                )
-
-            # Concatenate all chunks of text into one string to store in MongoDB
-            pdf_text = "\n".join([doc.page_content for doc in documents])
-
-            # Save extracted PDF text into MongoDB
-            insert_pdf_data(pdf_text)
-
-            st.success("Document uploaded and processed. You can now ask questions about its content.")
+                st.success("Document uploaded and processed. You can now ask questions about its content.")
 
 
     # Question input and response
@@ -184,7 +177,7 @@ else:
             retrieved_docs = docsearch.as_retriever(search_kwargs={"k": 10}).get_relevant_documents(question)
             context = "\n\n".join([doc.page_content for doc in retrieved_docs])
             answer = qa.invoke(question)
-            insert_question(question) 
+            insert_question(question, answer, feedback= "") 
             st.session_state.answer = answer["result"]
             st.session_state.question = question
             st.session_state.feedback_given = False
@@ -208,6 +201,7 @@ else:
                 st.session_state.feedback_given = True
                 st.session_state.feedback_submitted = True
 
+
         # Display feedback if submitted
         if st.session_state.feedback_submitted:
             st.write("### Feedback Summary:")
@@ -222,6 +216,9 @@ else:
                 f"The correct response should have been: '{st.session_state.feedback_text}'. "
                 "Please use this information to improve future responses."
             )      
+
+
+            insert_question(st.session_state.st.session_state.answer, answer, st.session_state.feedback_text)
             
             # Convert raw text to Document object
             document_reinf = Document(page_content=memory_reinforcement)
@@ -235,17 +232,3 @@ else:
             )
             
             st.success("Model memory updated")
-
-
-    # Clear database button
-    if st.button("Clear the database"):
-        with st.spinner("Clearing the database..."):
-            try:
-                pc = Pinecone(api_key=api_key)
-                index = pc.Index(index_name)
-                index.delete(delete_all=True, namespace=namespace)
-                delete_all_questions()                      # Delete all questions from 'questions'
-                delete_all_pdf_data()                       # Delete all PDF data from 'uploadedpdf'
-                st.success("Database cleared!")
-            except:
-                st.error("The database is already empty.")
